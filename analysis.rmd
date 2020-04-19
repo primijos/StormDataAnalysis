@@ -1,0 +1,341 @@
+---
+title: "Storm Data Analysis in the United States between 1950 and 2011"
+author: "José Oliver Segura - JoseO!"
+date: "4/16/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Synopsis
+
+In this document we present the analysis performed on the NOAA storm database. We are interestend in finding out which are the main causes for (a) economic damages and (b) health perils, across all United States. After our analysis we can affirm that the main sources for economic damages are: hurricanes/typhoons, storm surges, floods, tornados and hail, and the main source of danger for people health are tornados, followed (in different order, considering injuries or fatalities) by excessive heat, floods and wind. In the case of fatalities, we can also see a more uniform distribution on the main causes, while in the case of injuries, x is by large the main reason.
+
+## Data processing
+
+Data is obtained from Coursera Assignment [link](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2), despite the original source of the database is the U.S. National Oceanic and Atmospheric Administration' (NOAA) storm database. This file is compressed using bzip2 (which can be read directly from R), so we have downloaded it to our `data` directory. This data will be used as our input; itwas obtained on april, 16th, at 23:20.
+
+Additional information about this dataset can be found in the following links:
+
+* National Weather Service [Storm Data Documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf)
+* National Climatic Data Center Storms Events [FAQ](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2FNCDC%20Storm%20Events-FAQ%20Page.pdf)
+
+### Reading and transforming data
+
+A careful review of the .csv origin file shows us that it is a comma separated values file with header. Doing a quick search on the file also reveals `?` as the NA value. We can use this knowledge to read the csv file (note that we can use read.csv directly, wince R is able to uncompress the file on-the-fly):
+
+```{r import-data, cache=T}
+data <- read.csv("data/repdata_data_StormData.csv.bz2",header=T, sep=",", check.names = T, na.strings = "?")
+```
+
+Looking at the type of analysis we need to perform, we can check for NAs in our columns of interest:
+
+```{r summary, cache=T}
+sapply(c("EVTYPE","INJURIES","FATALITIES","PROPDMG","PROPDMGEXP","CROPDMG","CROPDMGEXP","BGN_DATE"),function(x) {summary(data[x])})
+```
+
+Looks like there are few NAs in our columns of interest. We can see that there is only one in **EVTYPE**, 8 in **PROPDMGEXP** (exponent/modifier for the properties damages value) and 7 for **CROPDMGEXP** (analogous, for crops damages) that's all.
+
+Let's take a look at **PROPDMG** and **PROPMGEXP**:
+
+```{r checkprop}
+data[is.na(data$PROPDMGEXP),"PROPDMG"]
+```
+
+Let's do the same for **CROPDMG** and **CROPDMGEXP**:
+
+```{r checkcrop}
+data[is.na(data$CROPDMGEXP),"CROPDMG"]
+```
+
+Since damages (**PROPDMG**/**CROPDMG**) is 0 for all those cases where **PROPDMGEXP**/**CROPDMGEXP** is NA, we can set these to 0 in order to deal with them the same way we deal with other rows, without bothering with spurious NAs appearing. We can also assign the case corresponding to a NA **EVTYPE** to an "unknown" type:
+
+```{r fixpropcrop}
+data$PROPDMGEXP[is.na(data$PROPDMGEXP)] <- 0
+data$CROPDMGEXP[is.na(data$CROPDMGEXP)] <- 0
+levels(data$EVTYPE) <- c(levels(data$EVTYPE),"UNKNOWN")
+data$EVTYPE[is.na(data$EVTYPE)] <- "UNKNOWN"
+```
+
+We need to perform some analysis based on the type of event (**EVTYPE**), so one thing we can do is check what data is in that column.
+
+```{r viewtypes}
+length(levels(data$EVTYPE))
+```
+
+As we can see, there are almost 1000 different event types, despite the original documentation from NOAA defines many less. We can do a quick rough cut to see what's going on, since from a first glipse, it looks like there is some duplicity on event types (non standardized values):
+
+```{r viewshorttypes}
+unique(substr(levels(data$EVTYPE),1,4))
+```
+
+From here, we can extract some additional information:
+
+* Some event types have leading spaces in their names, we need to fix it.
+
+* There are some events of type "summ". Those correspond (after reviewing data) to "summary" entries that point to other (following entries), so we can remove them.
+
+* There are many different names for the same event type. For example:
+
+```{r grepexample}
+grep("^urban.+small",levels(data$EVTYPE), ignore.case=T, value=T)
+```
+
+In order to fix this, we can run a series of transformations on **EVTYPE** to unify types. The following transformations have been decided after reviewing the raw list of **EVTYPE** values:
+
+```{r cleantype}
+# drop summaries
+data <- data[!grepl("^summary",data$EVTYPE,ignore.case=T),]
+# remove leading/trailing spaces
+data$EVTYPE <- as.factor(trimws(data$EVTYPE,"b"))
+# create a new column for simplified event type, this also allows us to keep the original event type in case we want to perform some additional exploration
+data$type <- data$EVTYPE
+```
+
+These are the basic filters for **EVTYPE**, now we can apply some more transformations:
+
+```{r jointypes}
+levels(data$type) <- c(levels(data$type),"HAIL","SNOW","FLOOD","RAIN","TORNADO","UNSEASON","THUNDERSTORM","RECORD","FIRE")
+data$type[grepl("wind|wins$|w inds|win$",data$EVTYPE,ignore.case = T)] <- as.factor("WIND")
+data$type[grepl("hurricane",data$EVTYPE,ignore.case = T)] <- as.factor("HURRICANE")
+data$type[grepl("hail",data$EVTYPE,ignore.case = T)] <- as.factor("HAIL")
+data$type[grepl("snow",data$EVTYPE,ignore.case = T)] <- as.factor("SNOW")
+data$type[grepl("flood",data$EVTYPE,ignore.case = T)] <- as.factor("FLOOD")
+data$type[grepl("rain",data$EVTYPE,ignore.case = T)] <- as.factor("RAIN")
+data$type[grepl("tornado",data$EVTYPE,ignore.case = T)] <- as.factor("TORNADO")
+data$type[grepl("^unseason",data$EVTYPE,ignore.case = T)] <- as.factor("UNSEASON")
+data$type[grepl("thunderstorm",data$EVTYPE,ignore.case = T)] <- as.factor("THUNDERSTORM")
+data$type[grepl("record",data$EVTYPE,ignore.case = T)] <- as.factor("RECORD")
+data$type[grepl("fire",data$EVTYPE,ignore.case = T)] <- as.factor("FIRE")
+data$type <- droplevels(data$type)
+```
+
+Additionally, we can add the year as a separate column, to perform some additional data checking if needed:
+
+```{r setyear}
+data$year <- as.numeric(strftime(as.Date(data$BGN_DATE,"%m/%d/%Y"),"%Y"))
+```
+
+Once we have the **type** column fixed and we added tye **year** column, we can work on the **PROPDMG** and **PROPDMGEXP** columns. The first one is a number telling the damages in properties. The second one is an exponent (modifier). We can find out which modifiers are there. For properties damages:
+
+```{r viewpropexps}
+levels(data$PROPDMGEXP)
+```
+
+And for crops damages:
+
+```{r viewcropexps}
+levels(data$CROPDMGEXP)
+```
+
+There are some reasonable "exponents" (empty, 0 or "", 1..8, H/h=100, K=1000, M/m=10^6). These assumptions have been checked by selecting and reading some records from the dataset corresponding to those exponents. For example, the ones with *M* correspond to big events, such as tornados, hurricanes, etc..
+
+There's also an important one to check: **B**. We could think it refers to "billions". Since that's a very big exponent, we can check the rows involved:
+
+```{r checkBs}
+data[data$PROPDMGEXP=="B",c("year","PROPDMG","type","REFNUM")]
+``` 
+
+There's one row that catch our attention, since it tells that in 2006 there was a flood that caused 115 **bilions** of dollars in damages. That number is 4x the higher number in the rest of this set (which actually corresponds to the Katrina Hurricane). That can make us think that this data might not be right. Just to be sure, since it looks like a really big event, I googled to find out the original report. It can be found [in Google books](https://books.google.es/books?id=MRZSAQAAMAAJ&pg=PA170&lpg=PA170&dq=flooding+napa+river+january+2006&source=bl&ots=EIMIaaZnjP&sig=ACfU3U3uMUkhGz6aOjFd5isGRTz46cqpgw&hl=en&sa=X&ved=2ahUKEwim5bTDpu7oAhVKXRoKHUd9DiwQ6AEwA3oECAsQKA#v=onepage&q=flooding%20napa%20river%20january%202006&f=false). This original report tells us this flood caused 115 **milions** in damages. We can fix this:
+
+```{r fixBs}
+data$PROPDMG[data$REFNUM==605943] <- 115
+data$PROPDMGEXP[data$REFNUM==605943] <- "M"
+data[data$PROPDMGEXP=="B",c("year","PROPDMG","PROPDMGEXP","type","REFNUM")]
+```
+
+We can also run a similar check for crops damages:
+```{r checkBs2}
+data[data$CROPDMGEXP=="B",c("CROPDMG","type","REFNUM")]
+```
+In this case seems there is no obvious outlier/error, except a "0" in crops damages in one of them (which doesn't seem to be reasonable, since "B" is indicated as exponent). After checking the corresponding record, there is no additional information to help us, so we decide to keep it as it is.
+
+Once we have decided how to deal with the exponents, we can add a new column with the expanded economic damage for each record based on the exponents/modifiers, and adding both properties damages and crop damages as a single value:
+
+```{r setdollars}
+# Create a mapping table of the previously observed exponents/modifiers
+# ""  "-" "+" "0" "1" "2" "3" "4" "5" "6" "7" "8" "B" "h" "H" "K" "m" "M"
+# nothing to do for "", "-", "+" and "0"
+# for the rest, we set up a dataframe with multipliers
+exps <- data.frame(l=levels(data$PROPDMGEXP),factor=c(1,1,1,1,1,2,3,4,5,6,7,8,1000000000,100,100,1000,1000000,1000000))
+# we can perform a join using PROPMDGEXP==exp to add a column with the multiplier for property damages
+data <- merge(data,exps,by.x = "PROPDMGEXP", by.y="l")
+data$dollars <- data$PROPDMG * data$factor
+data$factor <- NULL
+# We can replicate this operation for the multiplier for crops damages
+data <- merge(data,exps,by.x = "CROPDMGEXP", by.y="l")
+# and now compute the sum of damages
+data$dollars <- data$dollars + data$CROPDMG * data$factor
+data$factor <- NULL
+# now "dollars" holds the raw value in dollars of the damages
+```
+
+Before proceeeding to the analysis, we can check for NAs in or columns of interest:
+
+```{r}
+sapply(c("EVTYPE","INJURIES","FATALITIES","dollars","year"),function(x) {summary(data[x])})
+```
+
+We can see that there are no NAs, so we consider no further action is required.
+
+## Results
+
+First we have to decide which data we want to analyse. The dataset contains data from 1950 to 2011. Since, I asume, we want to take into consideration just "recent" data, perhaps it makes no sense to use data from the fifties to analyse it, because (a) perhaps the damages (in population and economy) do not matter anymore, since new safety laws (for buldings, for example), etc. may have been adopted and (b) inflation: asigning a 1:1 to the value of a dollar from the fifties to the value of a dollar today perhaps doesn't make sense. By all those considerations, we decide to focus only in the last 25 years of data (that is: 1986-2011).
+
+Since this decision may have impact in the analysis, we can make some plots just to see what data we are planning to remove:
+
+```{r}
+par(mfcol=c(3,1))
+par(mar=c(4,4,1,0))
+plot(aggregate(FATALITIES ~ year,data,sum),type="l", main="Fatalities, injuries and damages 1950-2011")
+plot(aggregate(INJURIES ~ year,data,sum),type="l")
+plot(aggregate(dollars ~ year,data,sum),type="l")
+```
+
+From the plots, we can see that economic impact value doesn't seem much accurate or relevant until the nineties. Effects on people (fatalities, injuries) does not show such a clear difference, despite we can see some difference in the "fatalities" plot. However, the differences seem enough to keep our decission of taking only the last 25 years as dataset.
+
+Once we have decided this, we can filter our dataset (note that this is a completely subjective decission based on the previously exposed rationale)
+
+```{r}
+data <- data[data$year >= 1986,]
+```
+
+Once we have performed all the necessary transformations in our data, we can proceed to answer the questions we're interested in.
+
+### Events with greatest economic consequences
+
+In order to find out which events are the ones with greatest consequences on economy, we can aggregate data about damages in both properties and crops (that value is already in the new **dollars** column) grouping by **type**.
+
+```{r}
+eco.impact <- aggregate(dollars ~ type,data,sum)
+head(eco.impact)
+```
+
+Then, we compute the percent of damage caused by every type of event:
+
+```{r}
+eco.impact$pct <- (eco.impact$dollars / sum(eco.impact$dollars))*100
+head(eco.impact)
+```
+
+Now we can compute the *accumulated impact*. We'll start with the event **type** with higher impact (higher percent) and accumulate percents as we go:
+
+```{r}
+eco.impact <- eco.impact[order(-eco.impact$pct),]
+eco.impact$cumsum.pct <- cumsum(eco.impact$pct)
+```
+
+Let's see how many significant (economic impact > 0 ) rows do we have:
+
+```{r}
+eco.impact <- eco.impact[eco.impact$dollars > 0,]
+dim(eco.impact)
+```
+
+Now we can focus on the 142 rows with economic impact. As we have computed the cummulative impact of all them (ordered by percent of impact), we can stablish a cut point of the top "n" events. Lets see the top 20:
+
+```{r}
+head(eco.impact,n=20)
+```
+
+From this data, we can decide to focus on the top-14 events, since they account for 97% of damages and contain all events with more than 1% of impact.
+
+```{r}
+top.impact = head(eco.impact,n=14)
+```
+
+Let's plot this data (reversing ordered by percent, since that is our current data frame order and we want top contributors on top) to see how each top event contributes to total economic damages.
+
+```{r}
+par(mfrow=c(1,1))
+par(mar=c(3,7,3,1))
+top.impact <- top.impact[order(top.impact$pct),]
+bb <- barplot(top.impact$pct,names.arg=top.impact$type,horiz=T,cex.names=0.60,cex.axis=.6,las=1,main="Top % of total economic damage by event type, 1986-2011",xlab="Percent")
+title(ylab="Type",line=0,cex.lab=.6)
+title(xlab="Percent",line=0.4,cex.lab=.6)
+text(y=bb[1:10],top.impact$pct[1:10]+1,labels=sprintf("%.2f%%",top.impact$pct[1:10]),cex=.6)
+text(y=bb[11:14],top.impact$pct[11:14]-1,labels=sprintf("%.2f%%",top.impact$pct[11:14]),cex=.6)
+```
+
+Looking at that plot we can conclude that there are 5 top main causes of economic damages in the period 1986-2011:
+
+```{r}
+rev(tail(top.impact$type,n=5))
+```
+
+Together, these types of events caused `r sprintf("%.2f%%",sum(tail(top.impact$pct,n=5)))` of all total damages in the period 1986-2011.
+
+### Most harmful events respect to population health
+
+When analyzing data to find the most harmful events respect to population health, we can take into consideration two variables: injuries and fatalities. Since doesn't seem to be a way to unify them into a single variable, we can replicate the same steps as in the case of economic loss, but for the two different variables.
+
+First we aggregate them by type:
+
+```{r}
+
+h.impact <- aggregate(cbind(FATALITIES,INJURIES) ~ type, data, sum)
+
+```
+
+Now add a percent column computing how each row contributes to the total of each variable:
+
+```{r}
+h.impact$fat.pct <- (h.impact$FATALITIES / sum(h.impact$FATALITIES))*100
+h.impact$inj.pct <- (h.impact$INJURIES / sum(h.impact$INJURIES))*100
+```
+
+After we have this new columns, we can compute the cumulative sum of those percentages to stablish a cut point:
+
+```{r}
+h.impact <- h.impact[order(-h.impact$fat.pct),]
+h.impact$cumsum.fat.pct <- cumsum(h.impact$fat.pct)
+
+h.impact <- h.impact[order(-h.impact$inj.pct),]
+h.impact$cumsum.inj.pct <- cumsum(h.impact$inj.pct)
+```
+
+Now we can look at the first 20 values to decide where to stablish our cut point. First for fatalities:
+```{r}
+h.impact <- h.impact[order(-h.impact$fat.pct),]
+head(h.impact, n=20)
+```
+
+And for injuries:
+```{r}
+h.impact <- h.impact[order(-h.impact$inj.pct),]
+head(h.impact, n=20)
+```
+
+Once analyzed both listings, we decide to stick at the top 20 for presenting the data, since in both cases they account for more than the 90% of injuries/fatalities.
+
+We now split our dataset into two different datasets (filterint those top-20) and we can plot them to find out how each type of storm affects peoples health: 
+
+```{r}
+fatalities.data <- head(h.impact[order(-h.impact$fat.pct),c("type","fat.pct")],n=20)
+injuries.data <- head(h.impact[order(-h.impact$inj.pct),c("type","inj.pct")],n=20)
+
+par(mfrow=c(1,2))
+par(mar=c(2,7,3,0))
+
+injuries.data <- injuries.data[order(injuries.data$inj.pct),]
+bb <- barplot(injuries.data$inj.pct,names=injuries.data$type,horiz=T,cex.names=.6,cex.axis=.6,las=1)
+title("Injuries", line=0.5, cex.main=.8)
+text(y=bb[1:19],injuries.data$inj.pct[1:19]+5,labels=sprintf("%.2f%%",injuries.data$inj.pct[1:19]),cex=.6)
+text(y=bb[20],injuries.data$inj.pct[20]-5,labels=sprintf("%.2f%%",injuries.data$inj.pct[20]),cex=.6)
+title(ylab="Type",line=0,cex.lab=.6)
+title(xlab="Percent",line=0.4,cex.lab=.6)
+
+fatalities.data <- fatalities.data[order(fatalities.data$fat.pct),]
+barplot(fatalities.data$fat.pct,names=fatalities.data$type,horiz=T,cex.names=.6,cex.axis=.6,las=1,)
+title("Fatalities", line=0.5, cex.main=.8)
+text(y=bb[1:14],fatalities.data$fat.pct[1:14]+2,labels=sprintf("%.2f%%",fatalities.data$fat.pct[1:14]),cex=.6)
+text(y=bb[15:20],fatalities.data$fat.pct[15:20]-2,labels=sprintf("%.2f%%",fatalities.data$fat.pct[15:20]),cex=.6)
+title(ylab="Type",line=0,cex.lab=.6)
+title(xlab="Percent",line=0.4,cex.lab=.6)
+mtext("% of total injuries and fatalities by event type, 1986-2011 (Top 20)", side = 1, line = -24.5, outer = TRUE)
+```
+
+From this data we can point to tornados as the main cause of fatalities and injuries. In the case of injuries, it is followed by flood, wind and excessive heat. For fatalities, the three same causes follow tornados, but in this case the order is different; excessive heat goes after tornados, followed by floods and wind. In this case, also, excessive heat is quite close to tornados, and floods and wind are not so distant in percentage as in the injuries case.
